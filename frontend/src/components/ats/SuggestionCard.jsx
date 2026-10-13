@@ -10,7 +10,7 @@ const PRIORITY_COLOR = {
   Low:    'var(--color-text-tertiary)',
 }
 
-export default function SuggestionCard({ suggestion, onApply, isApplied = false }) {
+export default function SuggestionCard({ suggestion, onApply, onRemove, isApplied = false }) {
   const { type, section, priority, before, after } = suggestion
   const typeStyle = TYPE_STYLES[type] || TYPE_STYLES.Improve
 
@@ -111,23 +111,51 @@ export default function SuggestionCard({ suggestion, onApply, isApplied = false 
           {after}
         </p>
 
-        <button
-          className={`btn btn-sm ${isApplied ? 'btn-ghost' : 'btn-primary'}`}
-          onClick={() => onApply(suggestion)}
-          disabled={isApplied}
-          style={{
-            width: '100%',
-            justifyContent: 'center',
-            gap: '6px',
-            opacity: isApplied ? 0.7 : 1,
-          }}
-        >
-          {isApplied ? (
-            <>✓ Implemented into Resume</>
-          ) : (
-            <>⚡ Implement into Resume</>
-          )}
-        </button>
+        {isApplied ? (
+          <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
+            <div style={{
+              flex: 1,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: '6px 10px',
+              background: 'var(--color-success-bg)',
+              color: 'var(--color-success)',
+              borderRadius: 'var(--radius-sm)',
+              fontSize: 'var(--text-xs)',
+              fontWeight: 'var(--weight-semibold)',
+              border: '1px solid rgba(34,197,94,0.3)',
+            }}>
+              ✓ Active in Resume
+            </div>
+            <button
+              className="btn btn-sm"
+              onClick={() => onRemove && onRemove(suggestion)}
+              style={{
+                background: '#FEF2F2',
+                color: '#DC2626',
+                borderColor: '#FCA5A5',
+                gap: '4px',
+                fontSize: 'var(--text-xs)',
+              }}
+              title="Remove this implementation and restore original text"
+            >
+              ↩️ Remove
+            </button>
+          </div>
+        ) : (
+          <button
+            className="btn btn-primary btn-sm"
+            onClick={() => onApply(suggestion)}
+            style={{
+              width: '100%',
+              justifyContent: 'center',
+              gap: '6px',
+            }}
+          >
+            ⚡ Implement into Resume
+          </button>
+        )}
       </div>
     </div>
   )

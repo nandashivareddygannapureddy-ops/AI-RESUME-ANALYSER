@@ -1,6 +1,6 @@
 // src/pages/ATSPage.jsx
 import { useState, useEffect }         from 'react'
-import { useNavigate }      from 'react-router'
+import { useNavigate, useLocation } from 'react-router'
 import { useAuth }          from '../context/AuthContext'
 import toast                from 'react-hot-toast'
 import SourceToggle         from '../components/ats/SourceToggle'
@@ -8,6 +8,7 @@ import ScorePanel           from '../components/ats/ScorePanel'
 import SuggestionsPanel     from '../components/ats/SuggestionsPanel'
 import LoginPromptModal     from '../components/common/LoginPromptModal'
 import resumeService        from '../services/resumeService'
+import html2pdf             from 'html2pdf.js'
 
 const MOCK_RESULT = {
   atsScore: 78,
@@ -91,6 +92,7 @@ function uploadToast() {
 export default function ATSPage() {
   const { token, user, loading: authLoading } = useAuth()
   const navigate  = useNavigate()
+  const location  = useLocation()
   const [showAuthModal, setShowAuthModal] = useState(false)
 
   const [source,     setSource]     = useState('upload')
@@ -124,6 +126,8 @@ export default function ATSPage() {
     education:  'Bachelor of Science in Computer Science or related degree',
   })
   const [appliedSuggestions, setAppliedSuggestions] = useState([])
+  const [originalBuilderData, setOriginalBuilderData] = useState(null)
+  const [originalScore, setOriginalScore] = useState(null)
   const [reanalyzing, setReanalyzing] = useState(false)
   const [savingResume, setSavingResume] = useState(false)
 
@@ -146,6 +150,40 @@ export default function ATSPage() {
       }
     }
   }, [pdfUrl])
+
+  // Load selected resume if navigated from Dashboard
+  useEffect(() => {
+    if (location.state?.selectedResume) {
+      const sel = location.state.selectedResume;
+      if (sel.atsResult) {
+        setResult(sel.atsResult);
+      } else if (sel.atsScore) {
+        setResult({
+          ...MOCK_RESULT,
+          atsScore: sel.atsScore,
+          jobRole: sel.role || 'Software Engineer',
+          shortlistProbability: sel.atsScore >= 80 ? `High (${sel.atsScore}%)` : `Medium (${sel.atsScore}%)`,
+          shortlistTier: sel.atsScore >= 80 ? 'high' : 'medium',
+        });
+      }
+      if (sel.parsedData) {
+        setBuilderData(sel.parsedData);
+        setOriginalBuilderData(sel.parsedData);
+        setOriginalScore(sel.atsScore || 70);
+      }
+      if (sel.role) {
+        setRole(ROLES.includes(sel.role) ? sel.role : 'Others');
+        if (!ROLES.includes(sel.role)) setCustomRole(sel.role);
+      }
+      if (sel.filename || sel.fileName) {
+        setFileName(sel.filename || sel.fileName);
+      }
+      setTimeout(() => {
+        const el = document.getElementById('resume-editor-section');
+        if (el) el.scrollIntoView({ behavior: 'smooth' });
+      }, 200);
+    }
+  }, [location.state]);
 
   const activeRole = role === 'Others' ? customRole : role
 
@@ -320,6 +358,36 @@ ${builderData.education}
     window.print();
   };
 
+  const handleDownloadPdf = () => {
+    const element = document.getElementById("resume-print-area");
+    if (!element) {
+      toast.error("Resume preview element not found");
+      return;
+    }
+
+    const toastId = toast.loading("Generating high-resolution PDF...", { position: "top-center" });
+    const opt = {
+      margin:       [8, 8, 8, 8],
+      filename:     `${(builderData.name || "Resume").replace(/\s+/g, "_")}_Optimized.pdf`,
+      image:        { type: "jpeg", quality: 0.98 },
+      html2canvas:  { scale: 2, useCORS: true, letterRendering: true },
+      jsPDF:        { unit: "mm", format: "a4", orientation: "portrait" },
+    };
+
+    html2pdf()
+      .set(opt)
+      .from(element)
+      .save()
+      .then(() => {
+        toast.success("Resume PDF downloaded successfully! 📄", { id: toastId, position: "top-center" });
+      })
+      .catch((err) => {
+        console.warn("Direct PDF generation fallback to print:", err);
+        toast.dismiss(toastId);
+        window.print();
+      });
+  };
+
   const handleCopyClipboard = () => {
     const text = `
 ${builderData.name.toUpperCase()}
@@ -389,6 +457,77 @@ ${builderData.education}
     });
 
     toast.success(`Implemented: ${suggestion.section} updated in your resume!`, { icon: '⚡', position: 'top-center' });
+  }
+
+  function handleRemoveSuggestion(suggestion) {
+    if (!appliedSuggestions.includes(suggestion.id)) return;
+
+    setAppliedSuggestions(prev => prev.filter(id => id !== suggestion.id));
+
+    const sec = (suggestion.section || "").toLowerCase();
+    setBuilderData(prev => {
+      const updated = { ...prev };
+      if (sec === "skills" || suggestion.action?.target === "skills") {
+        if (originalBuilderData) {
+          const remainingSugs = (result?.suggestions || [])
+            .filter(s => appliedSuggestions.includes(s.id) && s.id !== suggestion.id && (s.section?.toLowerCase() === "skills" || s.action?.target === "skills"));
+          const remainingSkills = remainingSugs.flatMap(s => s.action?.addKeywords || []);
+          const origSkills = (originalBuilderData.skills || "").split(",").map(s => s.trim()).filter(Boolean);
+          const combined = Array.from(new Set([...origSkills, ...remainingSkills]));
+          updated.skills = combined.join(", ");
+        }
+      } else if (sec === "summary" || suggestion.action?.target === "summary") {
+        if (originalBuilderData) {
+          updated.summary = originalBuilderData.summary;
+        }
+      } else if (sec === "experience" || suggestion.action?.target === "experience") {
+        const bullet = suggestion.action?.bulletImprovement || suggestion.after;
+        if (bullet && updated.experience) {
+          updated.experience = updated.experience
+            .split("\n")
+            .filter(line => !line.includes(bullet))
+            .join("\n")
+            .trim();
+        } else if (originalBuilderData) {
+          updated.experience = originalBuilderData.experience;
+        }
+      }
+      return updated;
+    });
+
+    // Recalculate score downwards
+    setResult(prev => {
+      if (!prev) return prev;
+      const count = appliedSuggestions.filter(id => id !== suggestion.id).length;
+      const newScore = count === 0 && originalScore ? originalScore : Math.max(originalScore || 45, (prev.atsScore || 70) - 5);
+      return {
+        ...prev,
+        atsScore: newScore,
+        shortlistProbability: newScore >= 80 ? `High (${newScore}%)` : `Medium (${newScore}%)`,
+        shortlistTier: newScore >= 80 ? "high" : "medium",
+        breakdown: (prev.breakdown || []).map(b => ({
+          ...b,
+          value: Math.max(45, b.value - 4),
+        })),
+      };
+    });
+
+    toast.success(`Removed AI change from ${suggestion.section}!`, { icon: '↩️', position: 'top-center' });
+  }
+
+  function handleRevertAll() {
+    if (!originalBuilderData) return;
+    setBuilderData({ ...originalBuilderData });
+    setAppliedSuggestions([]);
+    if (originalScore) {
+      setResult(prev => ({
+        ...prev,
+        atsScore: originalScore,
+        shortlistProbability: originalScore >= 80 ? `High (${originalScore}%)` : `Medium (${originalScore}%)`,
+        shortlistTier: originalScore >= 80 ? "high" : "medium",
+      }));
+    }
+    toast.success('Reverted all AI changes! Your original resume is restored.', { icon: '↺', position: 'top-center' });
   }
 
   function handleApplyAllSuggestions() {
@@ -527,19 +666,52 @@ ${builderData.education}
       setResult(analysisData);
       setAppliedSuggestions([]);
 
-      // Pre-populate builderData from actual parsed resume content
+      // Pre-populate builderData PURELY from authentic parsed resume content - NEVER pre-inject AI suggestions!
+      let cleanData = null;
       if (analysisData.parsedData) {
-        setBuilderData({
+        cleanData = {
           name: analysisData.parsedData.name || user?.name || 'Your Name',
           title: analysisData.parsedData.title || activeRole || 'Software Engineer',
           email: analysisData.parsedData.email || user?.email || 'email@example.com',
           phone: analysisData.parsedData.phone || '(123) 456-7890',
-          skills: analysisData.parsedData.skills || (analysisData.keywords?.found || []).join(', ') || 'JavaScript, React, Node.js',
-          summary: analysisData.parsedData.summary || analysisData.suggestions?.find(s => s.section === 'Summary')?.after || 'Results-driven professional with hands-on experience.',
-          experience: analysisData.parsedData.experience || analysisData.suggestions?.filter(s => s.section === 'Experience').map(s => `• ${s.after}`).join('\n') || '• Engineered scalable features and improved performance.',
-          education: analysisData.parsedData.education || 'Bachelor of Science in Computer Science or related degree',
-        });
+          skills: analysisData.parsedData.skills || (analysisData.keywords?.found || []).join(', ') || '',
+          summary: analysisData.parsedData.summary || '',
+          experience: analysisData.parsedData.experience || '',
+          education: analysisData.parsedData.education || '',
+        };
+      } else {
+        cleanData = {
+          name: user?.name || 'Your Name',
+          title: activeRole || 'Software Engineer',
+          email: user?.email || 'email@example.com',
+          phone: '(123) 456-7890',
+          skills: (analysisData.keywords?.found || []).join(', ') || '',
+          summary: '',
+          experience: '',
+          education: '',
+        };
       }
+
+      setBuilderData(cleanData);
+      setOriginalBuilderData(cleanData);
+      setOriginalScore(analysisData.atsScore || 70);
+
+      // Sync to localStorage so Dashboard immediately displays this uploaded resume
+      try {
+        const cachedItem = {
+          _id: analysisData.resumeId || `local_${Date.now()}`,
+          fileName: fileName || file?.name || 'resume.pdf',
+          role: activeRole || 'Software Engineer',
+          atsScore: analysisData.atsScore || 0,
+          jdMatch: analysisData.jdMatch?.score || 0,
+          source: source || 'upload',
+          createdAt: new Date().toISOString(),
+          parsedData: cleanData,
+        };
+        const existing = JSON.parse(localStorage.getItem('rozgaar_resumes_cache') || '[]');
+        const updated = [cachedItem, ...existing.filter(x => x.fileName !== cachedItem.fileName)].slice(0, 30);
+        localStorage.setItem('rozgaar_resumes_cache', JSON.stringify(updated));
+      } catch (e) {}
       toast.success('Resume analysis completed!', { position: 'top-center' });
     } catch (err) {
       console.error('Analyze failed, showing local review:', err);
@@ -913,7 +1085,9 @@ ${builderData.education}
                 suggestions={result.suggestions}
                 appliedIds={appliedSuggestions}
                 onApplySuggestion={handleApplySuggestion}
+                onRemoveSuggestion={handleRemoveSuggestion}
                 onApplyAll={handleApplyAllSuggestions}
+                onRevertAll={handleRevertAll}
               />
             )}
           </div>
@@ -922,7 +1096,7 @@ ${builderData.education}
 
       {/* ── Interactive Resume Editor & Live Optimization Section ── */}
       {result && (
-        <div style={{ marginTop: 'var(--space-10)' }}>
+        <div id="resume-editor-section" style={{ marginTop: 'var(--space-10)' }}>
           {/* Styles block for clean resume printing */}
           <style>{`
             @media print {
@@ -998,6 +1172,20 @@ ${builderData.education}
 
               <button
                 className="btn btn-primary btn-sm"
+                onClick={handleDownloadPdf}
+                style={{
+                  gap: '6px',
+                  backgroundColor: 'var(--color-primary, #6366f1)',
+                  color: '#ffffff',
+                  fontWeight: 'bold',
+                }}
+                title="Download updated resume as PDF file"
+              >
+                📄 Download PDF
+              </button>
+
+              <button
+                className="btn btn-secondary btn-sm"
                 onClick={handleReanalyze}
                 disabled={reanalyzing}
                 style={{ gap: '6px' }}
@@ -1015,6 +1203,22 @@ ${builderData.education}
               >
                 {savingResume ? 'Saving…' : '💾 Save Changes'}
               </button>
+
+              {appliedSuggestions.length > 0 && (
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={handleRevertAll}
+                  style={{
+                    gap: '6px',
+                    color: 'var(--color-danger)',
+                    borderColor: 'var(--color-danger-bg)',
+                    background: '#FEF2F2',
+                  }}
+                  title="Remove all AI changes and restore original resume"
+                >
+                  ↺ Revert to Original
+                </button>
+              )}
             </div>
           </div>
 
@@ -1188,10 +1392,45 @@ ${builderData.education}
                   </div>
 
                   {/* Export and Action Buttons */}
-                  <div style={{ display: 'flex', gap: 'var(--space-3)', marginTop: 'var(--space-2)', flexWrap: 'wrap' }}>
+                  <div style={{ display: 'flex', gap: 'var(--space-3)', marginTop: 'var(--space-3)', flexWrap: 'wrap' }}>
                     <button
                       className="btn btn-primary"
-                      style={{ flex: 1, minWidth: 160 }}
+                      style={{
+                        flex: 1,
+                        minWidth: 160,
+                        backgroundColor: 'var(--color-primary, #6366f1)',
+                        color: '#ffffff',
+                        fontWeight: 'bold',
+                        boxShadow: '0 4px 12px rgba(99, 102, 241, 0.25)',
+                      }}
+                      onClick={handleDownloadPdf}
+                    >
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ marginRight: '6px' }}>
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                        <polyline points="14 2 14 8 20 8" />
+                        <line x1="16" y1="13" x2="8" y2="13" />
+                        <line x1="16" y1="17" x2="8" y2="17" />
+                        <polyline points="10 9 9 9 8 9" />
+                      </svg>
+                      📄 Download PDF
+                    </button>
+                    
+                    <button
+                      className="btn btn-secondary"
+                      onClick={handlePrint}
+                      style={{ minWidth: 130 }}
+                    >
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ marginRight: '6px' }}>
+                        <polyline points="6 9 6 2 18 2 18 9" />
+                        <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2" />
+                        <rect x="6" y="14" width="12" height="8" />
+                      </svg>
+                      Print to PDF
+                    </button>
+
+                    <button
+                      className="btn btn-secondary"
+                      style={{ minWidth: 130 }}
                       onClick={handleDownloadText}
                     >
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ marginRight: '6px' }}>
@@ -1200,19 +1439,6 @@ ${builderData.education}
                         <line x1="12" y1="15" x2="12" y2="3" />
                       </svg>
                       Download TXT
-                    </button>
-                    
-                    <button
-                      className="btn btn-secondary"
-                      onClick={handlePrint}
-                      style={{ minWidth: 140 }}
-                    >
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ marginRight: '6px' }}>
-                        <polyline points="6 9 6 2 18 2 18 9" />
-                        <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2" />
-                        <rect x="6" y="14" width="12" height="8" />
-                      </svg>
-                      Print to PDF
                     </button>
 
                     <button
@@ -1240,9 +1466,19 @@ ${builderData.education}
                     <span style={{ fontSize: '11px', fontWeight: 'bold', textTransform: 'uppercase', color: 'var(--color-text-secondary)', letterSpacing: '0.05em' }}>
                       Live ATS Standard Preview
                     </span>
-                    <span style={{ fontSize: '11px', color: 'var(--color-success)', fontWeight: 'bold' }}>
-                      ATS Score: {result.atsScore}%
-                    </span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <span style={{ fontSize: '11px', color: 'var(--color-success)', fontWeight: 'bold' }}>
+                        ATS Score: {result.atsScore}%
+                      </span>
+                      <button
+                        onClick={handleDownloadPdf}
+                        className="btn btn-secondary btn-sm"
+                        style={{ padding: '2px 8px', fontSize: '11px', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+                        title="Download as PDF file"
+                      >
+                        📄 Download PDF
+                      </button>
+                    </div>
                   </div>
 
                   <div id="resume-print-area" style={{

@@ -22,22 +22,61 @@ function scoreBg(score) {
 export default function DashboardPage() {
   const { user, logout } = useAuth()
   const navigate         = useNavigate()
-  const [history, setHistory] = useState([])
+  const [history, setHistory] = useState(() => {
+    try {
+      const cached = JSON.parse(localStorage.getItem('rozgaar_resumes_cache') || '[]');
+      if (Array.isArray(cached) && cached.length > 0) {
+        return cached.map(r => ({
+          id: r._id || r.id,
+          filename: r.fileName || r.filename || 'resume.pdf',
+          role: r.role || r.jobRole || 'Software Engineer',
+          atsScore: r.atsScore || 0,
+          jdMatch: r.jdMatch || 0,
+          source: r.source || 'upload',
+          createdAt: r.createdAt || new Date().toISOString(),
+          parsedData: r.parsedData,
+          atsResult: r.atsResult,
+        }));
+      }
+    } catch (e) {}
+    return [];
+  });
   const [search,  setSearch]  = useState('')
   const [loadingHistory, setLoadingHistory] = useState(false)
 
-  // Fetch real resumes for current logged-in user from MongoDB
+  // Fetch real resumes for current logged-in user from MongoDB and merge with local cache
   useEffect(() => {
     async function loadUserResumes() {
-      if (!user) {
-        setHistory([])
-        return
-      }
+      const token = localStorage.getItem('token');
+      let cachedItems = [];
       try {
-        setLoadingHistory(true)
-        const res = await resumeService.getResumes()
+        const cached = JSON.parse(localStorage.getItem('rozgaar_resumes_cache') || '[]');
+        if (Array.isArray(cached)) {
+          cachedItems = cached.map(r => ({
+            id: r._id || r.id,
+            filename: r.fileName || r.filename || 'resume.pdf',
+            role: r.role || r.jobRole || 'Software Engineer',
+            atsScore: r.atsScore || 0,
+            jdMatch: r.jdMatch || 0,
+            source: r.source || 'upload',
+            createdAt: r.createdAt || new Date().toISOString(),
+            parsedData: r.parsedData,
+            atsResult: r.atsResult,
+          }));
+        }
+      } catch (e) {}
+
+      if (!user && !token) {
+        if (cachedItems.length > 0) setHistory(cachedItems);
+        return;
+      }
+
+      try {
+        setLoadingHistory(true);
+        const res = await resumeService.getResumes();
+        let apiItems = [];
         if (res?.data && Array.isArray(res.data)) {
-          const mapped = res.data.map(r => ({
+          apiItems = res.data.map(r => ({
             id: r._id,
             filename: r.fileName || 'resume.pdf',
             role: r.atsResult?.jobRole || r.jobRole || 'Software Engineer',
@@ -45,20 +84,36 @@ export default function DashboardPage() {
             jdMatch: r.atsResult?.jdMatch?.score || 0,
             source: r.source || 'upload',
             createdAt: r.createdAt,
-          }))
-          setHistory(mapped)
-        } else {
-          setHistory([])
+            parsedData: r.parsedData,
+            atsResult: r.atsResult,
+          }));
         }
+
+        // Merge API resumes with local cache resumes, deduplicating by filename or ID
+        const combinedMap = new Map();
+        for (const item of apiItems) {
+          combinedMap.set(item.id || item.filename, item);
+        }
+        for (const item of cachedItems) {
+          if (!combinedMap.has(item.id) && !combinedMap.has(item.filename)) {
+            combinedMap.set(item.id || item.filename, item);
+          }
+        }
+        const merged = Array.from(combinedMap.values()).sort(
+          (a, b) => new Date(b.createdAt) - new Date(a.createdAt)
+        );
+        setHistory(merged);
       } catch (err) {
-        console.warn('Could not load user resumes from MongoDB:', err.message)
-        setHistory([])
+        console.warn('Could not load user resumes from MongoDB:', err.message);
+        if (cachedItems.length > 0) {
+          setHistory(cachedItems);
+        }
       } finally {
-        setLoadingHistory(false)
+        setLoadingHistory(false);
       }
     }
-    loadUserResumes()
-  }, [user?._id, user?.id, user?.email])
+    loadUserResumes();
+  }, [user?._id, user?.id, user?.email]);
 
   const name      = user?.name || 'there'
   const initials  = name.slice(0, 2).toUpperCase()
@@ -73,14 +128,22 @@ export default function DashboardPage() {
 
   async function handleDelete(id) {
     try {
-      if (typeof id === 'string' && id.length > 10) {
-        await resumeService.deleteResume(id)
+      if (typeof id === 'string' && !id.startsWith('local_') && id.length > 10) {
+        await resumeService.deleteResume(id);
       }
-      setHistory(prev => prev.filter(r => r.id !== id))
-      toast.success('Resume removed', { position: 'top-center' })
     } catch (err) {
-      setHistory(prev => prev.filter(r => r.id !== id))
+      console.warn('Could not delete resume on server:', err.message);
     }
+    setHistory(prev => {
+      const next = prev.filter(r => r.id !== id);
+      try {
+        const cached = JSON.parse(localStorage.getItem('rozgaar_resumes_cache') || '[]');
+        const updatedCache = cached.filter(r => (r._id || r.id) !== id);
+        localStorage.setItem('rozgaar_resumes_cache', JSON.stringify(updatedCache));
+      } catch (e) {}
+      return next;
+    });
+    toast.success('Resume removed', { position: 'top-center' });
   }
 
   return (
@@ -318,7 +381,7 @@ export default function DashboardPage() {
                           color:       'var(--color-primary)',
                           borderColor: 'var(--color-primary-muted)',
                         }}
-                        onClick={() => navigate('/ats')}
+                        onClick={() => navigate('/ats', { state: { selectedResume: r } })}
                       >
                         View
                       </button>

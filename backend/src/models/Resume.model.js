@@ -3,23 +3,24 @@ const mongoose = require("mongoose");
 const ResumeSchema = new mongoose.Schema(
   {
     userId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "User",
+      type: mongoose.Schema.Types.Mixed,
       required: true,
     },
     fileName: {
       type: String,
-      required: true,
+      default: "resume.pdf",
     },
     fileUrl: {
       type: String,
-      required: true,
+      default: "",
     },
     fileSize: {
       type: Number,
+      default: 0,
     },
     mimeType: {
       type: String,
+      default: "application/pdf",
     },
     parsedText: {
       type: String,

@@ -8,7 +8,9 @@ export default function SuggestionsPanel({
   suggestions = [],
   appliedIds = [],
   onApplySuggestion,
+  onRemoveSuggestion,
   onApplyAll,
+  onRevertAll,
 }) {
   const [filter, setFilter] = useState('All')
 
@@ -21,6 +23,12 @@ export default function SuggestionsPanel({
       onApplySuggestion(suggestion)
     } else {
       toast.success(`Suggestion applied: ${suggestion.section}`)
+    }
+  }
+
+  function handleSingleRemove(suggestion) {
+    if (onRemoveSuggestion) {
+      onRemoveSuggestion(suggestion)
     }
   }
 
@@ -95,26 +103,46 @@ export default function SuggestionsPanel({
             key={s.id}
             suggestion={s}
             onApply={handleSingleApply}
+            onRemove={handleSingleRemove}
             isApplied={isApplied}
           />
         )
       })}
 
-      {/* Apply all */}
-      {suggestions.length > 0 && (
-        <button
-          className="btn btn-primary"
-          style={{ width: '100%', gap: '8px', padding: '12px' }}
-          onClick={handleAllApply}
-          disabled={allApplied}
-        >
-          {allApplied ? (
-            <>✓ All {suggestions.length} AI Suggestions Implemented</>
-          ) : (
-            <>⚡ Implement All Suggestions ({suggestions.length}) into Resume</>
-          )}
-        </button>
-      )}
+      {/* Apply all / Revert buttons */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
+        {suggestions.length > 0 && (
+          <button
+            className="btn btn-primary"
+            style={{ width: '100%', gap: '8px', padding: '12px' }}
+            onClick={handleAllApply}
+            disabled={allApplied}
+          >
+            {allApplied ? (
+              <>✓ All {suggestions.length} AI Suggestions Implemented</>
+            ) : (
+              <>⚡ Implement All Suggestions ({suggestions.length}) into Resume</>
+            )}
+          </button>
+        )}
+
+        {appliedIds.length > 0 && (
+          <button
+            className="btn btn-secondary"
+            style={{
+              width: '100%',
+              gap: '6px',
+              padding: '10px',
+              color: 'var(--color-danger)',
+              borderColor: 'var(--color-danger-bg)',
+            }}
+            onClick={onRevertAll}
+            title="Remove all implemented suggestions and restore original uploaded resume"
+          >
+            ↺ Remove All Implementations ({appliedIds.length}) &amp; Revert to Original
+          </button>
+        )}
+      </div>
     </div>
   )
 }
