@@ -22,9 +22,13 @@ function scoreBg(score) {
 export default function DashboardPage() {
   const { user, logout } = useAuth()
   const navigate         = useNavigate()
+  const currentUserId = user?._id || user?.id || user?.email;
+  const userCacheKey = currentUserId ? `rozgaar_resumes_cache_${currentUserId}` : null;
+
   const [history, setHistory] = useState(() => {
+    if (!userCacheKey) return [];
     try {
-      const cached = JSON.parse(localStorage.getItem('rozgaar_resumes_cache') || '[]');
+      const cached = JSON.parse(localStorage.getItem(userCacheKey) || '[]');
       if (Array.isArray(cached) && cached.length > 0) {
         return cached.map(r => ({
           id: r._id || r.id,
@@ -44,13 +48,17 @@ export default function DashboardPage() {
   const [search,  setSearch]  = useState('')
   const [loadingHistory, setLoadingHistory] = useState(false)
 
-  // Fetch real resumes for current logged-in user from MongoDB and merge with local cache
+  // Fetch real resumes strictly for current logged-in user from MongoDB and user-scoped cache
   useEffect(() => {
     async function loadUserResumes() {
-      const token = localStorage.getItem('token');
+      if (!currentUserId) {
+        setHistory([]);
+        return;
+      }
+
       let cachedItems = [];
       try {
-        const cached = JSON.parse(localStorage.getItem('rozgaar_resumes_cache') || '[]');
+        const cached = JSON.parse(localStorage.getItem(userCacheKey) || '[]');
         if (Array.isArray(cached)) {
           cachedItems = cached.map(r => ({
             id: r._id || r.id,
@@ -65,11 +73,6 @@ export default function DashboardPage() {
           }));
         }
       } catch (e) {}
-
-      if (!user && !token) {
-        if (cachedItems.length > 0) setHistory(cachedItems);
-        return;
-      }
 
       try {
         setLoadingHistory(true);
@@ -89,7 +92,7 @@ export default function DashboardPage() {
           }));
         }
 
-        // Merge API resumes with local cache resumes, deduplicating by filename or ID
+        // Merge API resumes with user-scoped cache, deduplicating by ID or filename
         const combinedMap = new Map();
         for (const item of apiItems) {
           combinedMap.set(item.id || item.filename, item);
@@ -103,6 +106,9 @@ export default function DashboardPage() {
           (a, b) => new Date(b.createdAt) - new Date(a.createdAt)
         );
         setHistory(merged);
+        if (userCacheKey && merged.length > 0) {
+          localStorage.setItem(userCacheKey, JSON.stringify(merged));
+        }
       } catch (err) {
         console.warn('Could not load user resumes from MongoDB:', err.message);
         if (cachedItems.length > 0) {
@@ -113,7 +119,7 @@ export default function DashboardPage() {
       }
     }
     loadUserResumes();
-  }, [user?._id, user?.id, user?.email]);
+  }, [currentUserId]);
 
   const name      = user?.name || 'there'
   const initials  = name.slice(0, 2).toUpperCase()
@@ -136,11 +142,13 @@ export default function DashboardPage() {
     }
     setHistory(prev => {
       const next = prev.filter(r => r.id !== id);
-      try {
-        const cached = JSON.parse(localStorage.getItem('rozgaar_resumes_cache') || '[]');
-        const updatedCache = cached.filter(r => (r._id || r.id) !== id);
-        localStorage.setItem('rozgaar_resumes_cache', JSON.stringify(updatedCache));
-      } catch (e) {}
+      if (userCacheKey) {
+        try {
+          const cached = JSON.parse(localStorage.getItem(userCacheKey) || '[]');
+          const updatedCache = cached.filter(r => (r._id || r.id) !== id);
+          localStorage.setItem(userCacheKey, JSON.stringify(updatedCache));
+        } catch (e) {}
+      }
       return next;
     });
     toast.success('Resume removed', { position: 'top-center' });

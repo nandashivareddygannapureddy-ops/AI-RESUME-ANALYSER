@@ -40,7 +40,9 @@ const extractSectionsFromText = (rawText) => {
     skills: /^(?:technical\s+(?:competencies|skills)|core\s+competencies|skills\s*&?\s*tools|skills\s*(?:&|and)\s*abilities|technical\s+expertise|key\s+skills|skills)(?:[\s&/:-].*)?$/i,
     experience: /^(?:work\s+experience|professional\s+experience|employment\s+history|experience\s*(?:&|and)\s*achievements|work\s+history|experience|internships?)(?:[\s&/:-].*)?$/i,
     projects: /^(?:academic\s+projects|personal\s+projects|key\s+projects|technical\s+projects|projects\s*(?:&|and)\s*achievements|projects)(?:[\s&/:-].*)?$/i,
+    certifications: /^(?:certifications?|certificates?|licenses?|courses?|training)(?:[\s&/:-].*)?$/i,
     education: /^(?:education\s*(?:&|and)\s*certifications?|academic\s+background|qualifications|academic\s+history|education)(?:[\s&/:-].*)?$/i,
+    declaration: /^(?:declaration|statement)(?:[\s&/:-].*)?$/i,
   };
 
   const sectionBuffers = {
@@ -48,7 +50,9 @@ const extractSectionsFromText = (rawText) => {
     skills: [],
     experience: [],
     projects: [],
+    certifications: [],
     education: [],
+    declaration: [],
   };
 
   let currentSection = null;
@@ -73,11 +77,17 @@ const extractSectionsFromText = (rawText) => {
     }
   }
 
-  // Combine experience and projects if experience is light
+  // Combine experience and projects cleanly without certifications or declaration pollution
   let expText = sectionBuffers.experience.join("\n").trim();
   const projText = sectionBuffers.projects.join("\n").trim();
   if (projText && (!expText || expText.length < 150)) {
     expText = expText ? `${expText}\n\nProjects:\n${projText}` : projText;
+  }
+
+  let eduText = sectionBuffers.education.join("\n").trim();
+  const certText = sectionBuffers.certifications.join("\n").trim();
+  if (certText) {
+    eduText = eduText ? `${eduText}\n\nCertifications:\n${certText}` : `Certifications:\n${certText}`;
   }
 
   let summaryText = sectionBuffers.summary.join(" ").trim();
@@ -94,7 +104,7 @@ const extractSectionsFromText = (rawText) => {
     summary: summaryText,
     skills: sectionBuffers.skills.join("\n").trim(),
     experience: expText,
-    education: sectionBuffers.education.join("\n").trim(),
+    education: eduText,
   };
 };
 

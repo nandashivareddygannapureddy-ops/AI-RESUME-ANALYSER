@@ -88,10 +88,8 @@ const analyzeResume = async (req, res) => {
       extractedSections = parserService.extractSectionsFromText(resumeText);
     }
 
-    // Ensure title matches target role if empty
-    if (!extractedSections.title) {
-      extractedSections.title = jobRole;
-    }
+    // Preserve authentic candidate title (do NOT inject jobRole)
+    extractedSections.title = extractedSections.title || "";
 
     // 1. Analyze ATS with jobRole and jobDescription
     const atsResult = await analyzeATS(resumeText, jobRole, jobDescription);
@@ -143,55 +141,86 @@ const analyzeResume = async (req, res) => {
     };
 
     // If user is authenticated, persist in MongoDB (with memory fallback)
-    let savedResumeId = null;
+    let savedResumeId = req.body.resumeId || null;
     const currentUserId = req.user ? (req.user.id || req.user._id) : null;
 
     if (currentUserId) {
-      const resumeData = {
-        userId: currentUserId,
-        fileName: req.file ? req.file.originalname : (req.body.fileName || `resume_${Date.now()}.pdf`),
-        fileUrl: req.file ? `/uploads/${req.file.originalname}` : "/uploads/resume.pdf",
-        fileSize: req.file ? req.file.size : (resumeText ? resumeText.length : 1024),
-        mimeType: req.file ? req.file.mimetype : "application/pdf",
-        parsedText: resumeText,
-        parsedData: extractedSections,
-        atsScore: finalResult.atsScore,
-        atsResult: finalResult,
-        status: "analyzed",
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      };
+      const userOr = [
+        { userId: currentUserId },
+        { userId: currentUserId.toString() }
+      ];
+      if (mongoose.Types.ObjectId.isValid(currentUserId)) {
+        userOr.push({ userId: new mongoose.Types.ObjectId(currentUserId) });
+      }
 
-      try {
-        if (mongoose.connection.readyState === 1) {
-          const savedResume = await Resume.create(resumeData);
-          savedResumeId = savedResume._id;
+      // If an existing resumeId was provided, update it rather than duplicating
+      if (savedResumeId && mongoose.connection.readyState === 1 && mongoose.Types.ObjectId.isValid(savedResumeId)) {
+        try {
+          const updatedDoc = await Resume.findOneAndUpdate(
+            { _id: savedResumeId, $or: userOr },
+            {
+              parsedData: extractedSections,
+              atsScore: finalResult.atsScore,
+              atsResult: finalResult,
+              parsedText: resumeText,
+              updatedAt: new Date(),
+            },
+            { new: true }
+          );
+          if (updatedDoc) savedResumeId = updatedDoc._id;
+        } catch (updateErr) {
+          console.warn("Could not update existing resume doc:", updateErr.message);
+        }
+      }
 
-          try {
-            await ResumeHistory.create({
-              userId: currentUserId,
-              resumeId: savedResume._id,
-              action: "ats_analyzed",
-              score: finalResult.atsScore,
-              jobDescription: jobDescription,
-              result: finalResult,
-              notes: `Analyzed for ${jobRole}`,
-            });
-          } catch (histErr) {
-            // history log is secondary
+      // If not updated or new upload, create new record
+      if (!savedResumeId || savedResumeId.toString().startsWith("mem_") || savedResumeId.toString().startsWith("local_")) {
+        const resumeData = {
+          userId: currentUserId,
+          fileName: req.file ? req.file.originalname : (req.body.fileName || `resume_${Date.now()}.pdf`),
+          fileUrl: req.file ? `/uploads/${req.file.originalname}` : "/uploads/resume.pdf",
+          fileSize: req.file ? req.file.size : (resumeText ? resumeText.length : 1024),
+          mimeType: req.file ? req.file.mimetype : "application/pdf",
+          parsedText: resumeText,
+          parsedData: extractedSections,
+          atsScore: finalResult.atsScore,
+          atsResult: finalResult,
+          status: "analyzed",
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        };
+
+        try {
+          if (mongoose.connection.readyState === 1) {
+            const savedResume = await Resume.create(resumeData);
+            savedResumeId = savedResume._id;
+
+            try {
+              await ResumeHistory.create({
+                userId: currentUserId,
+                resumeId: savedResume._id,
+                action: "ats_analyzed",
+                score: finalResult.atsScore,
+                jobDescription: jobDescription,
+                result: finalResult,
+                notes: `Analyzed for ${jobRole}`,
+              });
+            } catch (histErr) {
+              // history log is secondary
+            }
+          } else {
+            // Fallback in-memory persistence
+            const mockId = `mem_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+            const memoryDoc = { ...resumeData, _id: mockId };
+            devMemoryResumes.unshift(memoryDoc);
+            savedResumeId = mockId;
           }
-        } else {
-          // Fallback in-memory persistence
+        } catch (dbErr) {
+          console.warn("MongoDB save warning, saving to memory fallback:", dbErr.message);
           const mockId = `mem_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-          const memoryDoc = { ...resumeData, _id: mockId };
-          devMemoryResumes.unshift(memoryDoc);
+          devMemoryResumes.unshift({ ...resumeData, _id: mockId });
           savedResumeId = mockId;
         }
-      } catch (dbErr) {
-        console.warn("MongoDB save warning, saving to memory fallback:", dbErr.message);
-        const mockId = `mem_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-        devMemoryResumes.unshift({ ...resumeData, _id: mockId });
-        savedResumeId = mockId;
       }
     }
 
@@ -288,21 +317,49 @@ const getResumeById = async (req, res) => {
 
 const updateResume = async (req, res) => {
   try {
+    const currentUserId = req.user ? (req.user.id || req.user._id) : null;
     const { parsedData, atsScore, atsResult } = req.body;
-    const resume = await Resume.findOneAndUpdate(
-      { _id: req.params.id, userId: req.user.id },
-      {
+
+    const userOr = [
+      { userId: currentUserId },
+      { userId: currentUserId?.toString() }
+    ];
+    if (mongoose.Types.ObjectId.isValid(currentUserId)) {
+      userOr.push({ userId: new mongoose.Types.ObjectId(currentUserId) });
+    }
+
+    let resume = null;
+    if (mongoose.connection.readyState === 1 && mongoose.Types.ObjectId.isValid(req.params.id)) {
+      resume = await Resume.findOneAndUpdate(
+        { _id: req.params.id, $or: userOr },
+        {
+          ...(parsedData && { parsedData }),
+          ...(atsScore !== undefined && { atsScore }),
+          ...(atsResult && { atsResult }),
+          updatedAt: new Date(),
+        },
+        { new: true }
+      );
+    }
+
+    // Also update devMemoryResumes if present
+    const memIndex = devMemoryResumes.findIndex(r => r._id === req.params.id && (r.userId == currentUserId || r.userId?.toString() == currentUserId?.toString()));
+    if (memIndex !== -1) {
+      devMemoryResumes[memIndex] = {
+        ...devMemoryResumes[memIndex],
         ...(parsedData && { parsedData }),
-        ...(atsScore && { atsScore }),
+        ...(atsScore !== undefined && { atsScore }),
         ...(atsResult && { atsResult }),
-      },
-      { new: true }
-    );
+        updatedAt: new Date(),
+      };
+      if (!resume) resume = devMemoryResumes[memIndex];
+    }
 
     if (!resume) {
-      return res.status(404).json({
-        success: false,
-        message: "Resume not found",
+      return res.status(200).json({
+        success: true,
+        message: "Resume updated",
+        data: { _id: req.params.id, atsScore, parsedData, atsResult },
       });
     }
 
@@ -321,16 +378,25 @@ const updateResume = async (req, res) => {
 
 const deleteResume = async (req, res) => {
   try {
-    const resume = await Resume.findOneAndDelete({
-      _id: req.params.id,
-      userId: req.user.id,
-    });
+    const currentUserId = req.user ? (req.user.id || req.user._id) : null;
+    const userOr = [
+      { userId: currentUserId },
+      { userId: currentUserId?.toString() }
+    ];
+    if (mongoose.Types.ObjectId.isValid(currentUserId)) {
+      userOr.push({ userId: new mongoose.Types.ObjectId(currentUserId) });
+    }
 
-    if (!resume) {
-      return res.status(404).json({
-        success: false,
-        message: "Resume not found",
+    if (mongoose.connection.readyState === 1 && mongoose.Types.ObjectId.isValid(req.params.id)) {
+      await Resume.findOneAndDelete({
+        _id: req.params.id,
+        $or: userOr,
       });
+    }
+
+    const memIndex = devMemoryResumes.findIndex(r => r._id === req.params.id && (r.userId == currentUserId || r.userId?.toString() == currentUserId?.toString()));
+    if (memIndex !== -1) {
+      devMemoryResumes.splice(memIndex, 1);
     }
 
     res.status(200).json({

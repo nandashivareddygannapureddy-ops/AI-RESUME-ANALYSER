@@ -117,7 +117,7 @@ export default function ATSPage() {
   const [pdfUrl,     setPdfUrl]     = useState(null)
   const [builderData, setBuilderData] = useState({
     name:       'Your Name',
-    title:      'Software Engineer',
+    title:      '',
     email:      'email@example.com',
     phone:      '(123) 456-7890',
     skills:     'JavaScript, React, Node.js, REST APIs, Git, SQL',
@@ -359,29 +359,54 @@ ${builderData.education}
   };
 
   const handleDownloadPdf = () => {
-    const element = document.getElementById("resume-print-area");
-    if (!element) {
+    const originalElement = document.getElementById("resume-print-area");
+    if (!originalElement) {
       toast.error("Resume preview element not found");
       return;
     }
 
     const toastId = toast.loading("Generating high-resolution PDF...", { position: "top-center" });
+
+    // Clone element to an isolated container to avoid overflow, scroll, and sticky offset blank issues
+    const clone = originalElement.cloneNode(true);
+    clone.style.width = "794px"; // Standard A4 width at 96 DPI
+    clone.style.minHeight = "1123px"; // Standard A4 height
+    clone.style.position = "absolute";
+    clone.style.left = "-9999px";
+    clone.style.top = "0";
+    clone.style.margin = "0";
+    clone.style.padding = "36px";
+    clone.style.background = "#ffffff";
+    clone.style.color = "#1a1a2e";
+    clone.style.boxShadow = "none";
+    clone.style.zIndex = "-9999";
+    document.body.appendChild(clone);
+
     const opt = {
-      margin:       [8, 8, 8, 8],
+      margin:       [10, 10, 10, 10],
       filename:     `${(builderData.name || "Resume").replace(/\s+/g, "_")}_Optimized.pdf`,
       image:        { type: "jpeg", quality: 0.98 },
-      html2canvas:  { scale: 2, useCORS: true, letterRendering: true },
+      html2canvas:  {
+        scale: 2,
+        useCORS: true,
+        letterRendering: true,
+        scrollY: 0,
+        scrollX: 0,
+        windowWidth: 1024,
+      },
       jsPDF:        { unit: "mm", format: "a4", orientation: "portrait" },
     };
 
     html2pdf()
       .set(opt)
-      .from(element)
+      .from(clone)
       .save()
       .then(() => {
+        if (clone && clone.parentNode) clone.parentNode.removeChild(clone);
         toast.success("Resume PDF downloaded successfully! 📄", { id: toastId, position: "top-center" });
       })
       .catch((err) => {
+        if (clone && clone.parentNode) clone.parentNode.removeChild(clone);
         console.warn("Direct PDF generation fallback to print:", err);
         toast.dismiss(toastId);
         window.print();
@@ -391,8 +416,7 @@ ${builderData.education}
   const handleCopyClipboard = () => {
     const text = `
 ${builderData.name.toUpperCase()}
-${builderData.title}
-${builderData.email} | ${builderData.phone}
+${builderData.title ? builderData.title + "\n" : ""}${builderData.email} | ${builderData.phone}
 
 PROFESSIONAL SUMMARY
 ${builderData.summary}
@@ -409,6 +433,41 @@ ${builderData.education}
     navigator.clipboard.writeText(text);
     toast.success('Formatted resume copied to clipboard!', { icon: '📋' });
   };
+
+  // Helper to sync resume updates directly to user-scoped localStorage and MongoDB
+  function syncResumeUpdate(updatedBuilderData, updatedResult) {
+    const currentUserId = user?._id || user?.id || user?.email;
+    const userCacheKey = currentUserId ? `rozgaar_resumes_cache_${currentUserId}` : null;
+    if (userCacheKey && updatedResult) {
+      try {
+        const cached = JSON.parse(localStorage.getItem(userCacheKey) || '[]');
+        const targetId = updatedResult.resumeId || result?.resumeId;
+        const currentFileName = fileName || file?.name || 'resume.pdf';
+        const updatedEntry = {
+          _id: targetId || `local_${Date.now()}`,
+          fileName: currentFileName,
+          role: activeRole || 'Software Engineer',
+          atsScore: updatedResult.atsScore || 0,
+          jdMatch: updatedResult.jdMatch?.score || 0,
+          source: source || 'upload',
+          createdAt: new Date().toISOString(),
+          parsedData: updatedBuilderData,
+          atsResult: updatedResult,
+        };
+        const filtered = cached.filter(x => (x.id !== updatedEntry._id && x._id !== updatedEntry._id && x.fileName !== currentFileName));
+        localStorage.setItem(userCacheKey, JSON.stringify([updatedEntry, ...filtered].slice(0, 30)));
+      } catch (e) {}
+    }
+
+    const resId = updatedResult?.resumeId || result?.resumeId;
+    if (resId && typeof resId === 'string' && !resId.startsWith('local_')) {
+      resumeService.updateResume(resId, {
+        parsedData: updatedBuilderData,
+        atsScore: updatedResult.atsScore,
+        atsResult: updatedResult,
+      }).catch(() => {});
+    }
+  }
 
   // ── 1-Click AI Suggestion Implementation Handlers ──
   function handleApplySuggestion(suggestion) {
@@ -440,21 +499,20 @@ ${builderData.education}
     setBuilderData(updated);
     setAppliedSuggestions(prev => [...prev, suggestion.id]);
 
-    // Dynamically boost ATS score in state
-    setResult(prev => {
-      if (!prev) return prev;
-      const boosted = Math.min(97, (prev.atsScore || 70) + 5);
-      return {
-        ...prev,
-        atsScore: boosted,
-        shortlistProbability: boosted >= 80 ? `High (${boosted}%)` : `Medium (${boosted}%)`,
-        shortlistTier: boosted >= 80 ? "high" : "medium",
-        breakdown: (prev.breakdown || []).map(b => ({
-          ...b,
-          value: Math.min(98, b.value + 4),
-        })),
-      };
-    });
+    // Dynamically boost ATS score in state and sync with history
+    const boosted = Math.min(97, (result?.atsScore || 70) + 5);
+    const updatedRes = {
+      ...result,
+      atsScore: boosted,
+      shortlistProbability: boosted >= 80 ? `High (${boosted}%)` : `Medium (${boosted}%)`,
+      shortlistTier: boosted >= 80 ? "high" : "medium",
+      breakdown: (result?.breakdown || []).map(b => ({
+        ...b,
+        value: Math.min(98, b.value + 4),
+      })),
+    };
+    setResult(updatedRes);
+    syncResumeUpdate(updated, updatedRes);
 
     toast.success(`Implemented: ${suggestion.section} updated in your resume!`, { icon: '⚡', position: 'top-center' });
   }
@@ -465,52 +523,51 @@ ${builderData.education}
     setAppliedSuggestions(prev => prev.filter(id => id !== suggestion.id));
 
     const sec = (suggestion.section || "").toLowerCase();
-    setBuilderData(prev => {
-      const updated = { ...prev };
-      if (sec === "skills" || suggestion.action?.target === "skills") {
-        if (originalBuilderData) {
-          const remainingSugs = (result?.suggestions || [])
-            .filter(s => appliedSuggestions.includes(s.id) && s.id !== suggestion.id && (s.section?.toLowerCase() === "skills" || s.action?.target === "skills"));
-          const remainingSkills = remainingSugs.flatMap(s => s.action?.addKeywords || []);
-          const origSkills = (originalBuilderData.skills || "").split(",").map(s => s.trim()).filter(Boolean);
-          const combined = Array.from(new Set([...origSkills, ...remainingSkills]));
-          updated.skills = combined.join(", ");
-        }
-      } else if (sec === "summary" || suggestion.action?.target === "summary") {
-        if (originalBuilderData) {
-          updated.summary = originalBuilderData.summary;
-        }
-      } else if (sec === "experience" || suggestion.action?.target === "experience") {
-        const bullet = suggestion.action?.bulletImprovement || suggestion.after;
-        if (bullet && updated.experience) {
-          updated.experience = updated.experience
-            .split("\n")
-            .filter(line => !line.includes(bullet))
-            .join("\n")
-            .trim();
-        } else if (originalBuilderData) {
-          updated.experience = originalBuilderData.experience;
-        }
-      }
-      return updated;
-    });
+    const updated = { ...builderData };
 
-    // Recalculate score downwards
-    setResult(prev => {
-      if (!prev) return prev;
-      const count = appliedSuggestions.filter(id => id !== suggestion.id).length;
-      const newScore = count === 0 && originalScore ? originalScore : Math.max(originalScore || 45, (prev.atsScore || 70) - 5);
-      return {
-        ...prev,
-        atsScore: newScore,
-        shortlistProbability: newScore >= 80 ? `High (${newScore}%)` : `Medium (${newScore}%)`,
-        shortlistTier: newScore >= 80 ? "high" : "medium",
-        breakdown: (prev.breakdown || []).map(b => ({
-          ...b,
-          value: Math.max(45, b.value - 4),
-        })),
-      };
-    });
+    if (sec === "skills" || suggestion.action?.target === "skills") {
+      if (originalBuilderData) {
+        const remainingSugs = (result?.suggestions || [])
+          .filter(s => appliedSuggestions.includes(s.id) && s.id !== suggestion.id && (s.section?.toLowerCase() === "skills" || s.action?.target === "skills"));
+        const remainingSkills = remainingSugs.flatMap(s => s.action?.addKeywords || []);
+        const origSkills = (originalBuilderData.skills || "").split(",").map(s => s.trim()).filter(Boolean);
+        const combined = Array.from(new Set([...origSkills, ...remainingSkills]));
+        updated.skills = combined.join(", ");
+      }
+    } else if (sec === "summary" || suggestion.action?.target === "summary") {
+      if (originalBuilderData) {
+        updated.summary = originalBuilderData.summary;
+      }
+    } else if (sec === "experience" || suggestion.action?.target === "experience") {
+      const bullet = suggestion.action?.bulletImprovement || suggestion.after;
+      if (bullet && updated.experience) {
+        updated.experience = updated.experience
+          .split("\n")
+          .filter(line => !line.includes(bullet))
+          .join("\n")
+          .trim();
+      } else if (originalBuilderData) {
+        updated.experience = originalBuilderData.experience;
+      }
+    }
+
+    setBuilderData(updated);
+
+    // Recalculate score downwards and sync
+    const remainingCount = appliedSuggestions.filter(id => id !== suggestion.id).length;
+    const newScore = remainingCount === 0 && originalScore ? originalScore : Math.max(originalScore || 45, (result?.atsScore || 70) - 5);
+    const updatedRes = {
+      ...result,
+      atsScore: newScore,
+      shortlistProbability: newScore >= 80 ? `High (${newScore}%)` : `Medium (${newScore}%)`,
+      shortlistTier: newScore >= 80 ? "high" : "medium",
+      breakdown: (result?.breakdown || []).map(b => ({
+        ...b,
+        value: Math.max(45, b.value - 4),
+      })),
+    };
+    setResult(updatedRes);
+    syncResumeUpdate(updated, updatedRes);
 
     toast.success(`Removed AI change from ${suggestion.section}!`, { icon: '↩️', position: 'top-center' });
   }
@@ -519,14 +576,15 @@ ${builderData.education}
     if (!originalBuilderData) return;
     setBuilderData({ ...originalBuilderData });
     setAppliedSuggestions([]);
-    if (originalScore) {
-      setResult(prev => ({
-        ...prev,
-        atsScore: originalScore,
-        shortlistProbability: originalScore >= 80 ? `High (${originalScore}%)` : `Medium (${originalScore}%)`,
-        shortlistTier: originalScore >= 80 ? "high" : "medium",
-      }));
-    }
+    const revertedScore = originalScore || 70;
+    const updatedRes = {
+      ...result,
+      atsScore: revertedScore,
+      shortlistProbability: revertedScore >= 80 ? `High (${revertedScore}%)` : `Medium (${revertedScore}%)`,
+      shortlistTier: revertedScore >= 80 ? "high" : "medium",
+    };
+    setResult(updatedRes);
+    syncResumeUpdate(originalBuilderData, updatedRes);
     toast.success('Reverted all AI changes! Your original resume is restored.', { icon: '↺', position: 'top-center' });
   }
 
@@ -563,18 +621,21 @@ ${builderData.education}
     setBuilderData(updated);
     setAppliedSuggestions(result.suggestions.map(s => s.id));
 
-    // Boost score to high tier
-    setResult(prev => ({
-      ...prev,
-      atsScore: Math.min(96, Math.max(88, (prev.atsScore || 70) + 16)),
+    // Boost score to high tier and sync
+    const boostedScore = Math.min(96, Math.max(88, (result?.atsScore || 70) + 16));
+    const updatedRes = {
+      ...result,
+      atsScore: boostedScore,
       shortlistProbability: 'High (95%)',
       shortlistTier: 'high',
       recruiterVerdict: `Optimized profile with complete role keyword coverage, quantified metrics, and standard ATS formatting for ${activeRole || "this role"}.`,
-      breakdown: (prev.breakdown || []).map(b => ({
+      breakdown: (result?.breakdown || []).map(b => ({
         ...b,
         value: Math.min(96, Math.max(86, b.value + 15)),
       })),
-    }));
+    };
+    setResult(updatedRes);
+    syncResumeUpdate(updated, updatedRes);
 
     toast.success('All AI suggestions implemented into your resume!', { icon: '🚀', position: 'top-center' });
   }
@@ -583,7 +644,9 @@ ${builderData.education}
     const existing = (builderData.skills || "").split(",").map(s => s.trim()).filter(Boolean);
     if (!existing.map(s => s.toLowerCase()).includes(keyword.toLowerCase())) {
       const merged = [...existing, keyword].join(", ");
-      setBuilderData(prev => ({ ...prev, skills: merged }));
+      const updated = { ...builderData, skills: merged };
+      setBuilderData(updated);
+      syncResumeUpdate(updated, result);
       toast.success(`Added "${keyword}" to skills!`, { icon: '✨' });
     } else {
       toast(`"${keyword}" is already in your skills`, { icon: 'ℹ️' });
@@ -597,8 +660,7 @@ ${builderData.education}
     try {
       const compiledText = `
 ${builderData.name}
-${builderData.title}
-${builderData.email} | ${builderData.phone}
+${builderData.title ? builderData.title + "\n" : ""}${builderData.email} | ${builderData.phone}
 
 PROFESSIONAL SUMMARY
 ${builderData.summary}
@@ -614,12 +676,15 @@ ${builderData.education}
       `.trim();
 
       const apiRes = await resumeService.analyze({
+        resumeId: result?.resumeId,
+        fileName: fileName || file?.name || 'resume.pdf',
         resumeText: compiledText,
         role: activeRole,
         jdText,
       });
       const analysisData = apiRes?.data || apiRes;
       setResult(analysisData);
+      syncResumeUpdate(builderData, analysisData);
       toast.success('ATS score re-analyzed with your latest edits!', { icon: '🎯', position: 'top-center' });
     } catch (err) {
       toast.error('Re-analysis failed: ' + (err.message || 'Unknown error'));
@@ -632,19 +697,20 @@ ${builderData.education}
     if (!requireAuth()) return;
     setSavingResume(true);
     try {
+      syncResumeUpdate(builderData, result);
       if (result?.resumeId) {
         await resumeService.updateResume(result.resumeId, {
           parsedData: builderData,
           atsScore: result.atsScore,
           atsResult: result,
         });
-        toast.success('Resume successfully saved to your MongoDB account!', { position: 'top-center' });
+        toast.success('Resume successfully saved to your MongoDB account & history!', { position: 'top-center' });
       } else {
-        toast.success('Resume updated and preserved for current session!', { position: 'top-center' });
+        toast.success('Resume updated and saved to your history!', { position: 'top-center' });
       }
     } catch (err) {
       console.warn('Save resume error:', err);
-      toast.success('Resume saved locally', { position: 'top-center' });
+      toast.success('Resume saved locally to your history', { position: 'top-center' });
     } finally {
       setSavingResume(false);
     }
@@ -666,12 +732,12 @@ ${builderData.education}
       setResult(analysisData);
       setAppliedSuggestions([]);
 
-      // Pre-populate builderData PURELY from authentic parsed resume content - NEVER pre-inject AI suggestions!
+      // Pre-populate builderData PURELY from authentic parsed resume content - NEVER inject fake titles or AI text!
       let cleanData = null;
       if (analysisData.parsedData) {
         cleanData = {
           name: analysisData.parsedData.name || user?.name || 'Your Name',
-          title: analysisData.parsedData.title || activeRole || 'Software Engineer',
+          title: analysisData.parsedData.title || '', // Strictly preserve authentic candidate title (no fake injection)
           email: analysisData.parsedData.email || user?.email || 'email@example.com',
           phone: analysisData.parsedData.phone || '(123) 456-7890',
           skills: analysisData.parsedData.skills || (analysisData.keywords?.found || []).join(', ') || '',
@@ -682,7 +748,7 @@ ${builderData.education}
       } else {
         cleanData = {
           name: user?.name || 'Your Name',
-          title: activeRole || 'Software Engineer',
+          title: '',
           email: user?.email || 'email@example.com',
           phone: '(123) 456-7890',
           skills: (analysisData.keywords?.found || []).join(', ') || '',
@@ -696,22 +762,35 @@ ${builderData.education}
       setOriginalBuilderData(cleanData);
       setOriginalScore(analysisData.atsScore || 70);
 
-      // Sync to localStorage so Dashboard immediately displays this uploaded resume
-      try {
-        const cachedItem = {
-          _id: analysisData.resumeId || `local_${Date.now()}`,
-          fileName: fileName || file?.name || 'resume.pdf',
-          role: activeRole || 'Software Engineer',
-          atsScore: analysisData.atsScore || 0,
-          jdMatch: analysisData.jdMatch?.score || 0,
-          source: source || 'upload',
-          createdAt: new Date().toISOString(),
-          parsedData: cleanData,
-        };
-        const existing = JSON.parse(localStorage.getItem('rozgaar_resumes_cache') || '[]');
-        const updated = [cachedItem, ...existing.filter(x => x.fileName !== cachedItem.fileName)].slice(0, 30);
-        localStorage.setItem('rozgaar_resumes_cache', JSON.stringify(updated));
-      } catch (e) {}
+      // If PDF file, ensure pdf preview URL is ready for side-by-side view
+      if (file && file.type === 'application/pdf') {
+        try {
+          const url = URL.createObjectURL(file);
+          setPdfUrl(url);
+        } catch (e) {}
+      }
+
+      // Sync strictly to user-scoped localStorage so Dashboard immediately displays this uploaded resume
+      const currentUserId = user?._id || user?.id || user?.email;
+      const userCacheKey = currentUserId ? `rozgaar_resumes_cache_${currentUserId}` : null;
+      if (userCacheKey) {
+        try {
+          const cachedItem = {
+            _id: analysisData.resumeId || `local_${Date.now()}`,
+            fileName: fileName || file?.name || 'resume.pdf',
+            role: activeRole || 'Software Engineer',
+            atsScore: analysisData.atsScore || 0,
+            jdMatch: analysisData.jdMatch?.score || 0,
+            source: source || 'upload',
+            createdAt: new Date().toISOString(),
+            parsedData: cleanData,
+            atsResult: analysisData,
+          };
+          const existing = JSON.parse(localStorage.getItem(userCacheKey) || '[]');
+          const updated = [cachedItem, ...existing.filter(x => x.fileName !== cachedItem.fileName)].slice(0, 30);
+          localStorage.setItem(userCacheKey, JSON.stringify(updated));
+        } catch (e) {}
+      }
       toast.success('Resume analysis completed!', { position: 'top-center' });
     } catch (err) {
       console.error('Analyze failed, showing local review:', err);

@@ -27,30 +27,8 @@ const ResumeSchema = new mongoose.Schema(
       default: "",
     },
     parsedData: {
-      name: { type: String },
-      email: { type: String },
-      phone: { type: String },
-      location: { type: String },
-      summary: { type: String },
-      skills: [{ type: String }],
-      experience: [
-        {
-          title: { type: String },
-          company: { type: String },
-          startDate: { type: String },
-          endDate: { type: String },
-          description: { type: String },
-        },
-      ],
-      education: [
-        {
-          school: { type: String },
-          degree: { type: String },
-          field: { type: String },
-          startDate: { type: String },
-          endDate: { type: String },
-        },
-      ],
+      type: mongoose.Schema.Types.Mixed,
+      default: {},
     },
     atsScore: {
       type: Number,
