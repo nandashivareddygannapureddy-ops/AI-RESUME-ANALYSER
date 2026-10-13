@@ -73,6 +73,9 @@ const connectDB = async () => {
 
       // 3. Fallback: Automatically run embedded MongoDB (works out-of-the-box on Render & local!)
       try {
+        if (process.env.VERCEL) {
+          throw new Error("Vercel Serverless functions require a cloud MONGO_URI (MongoDB Atlas). Please add MONGO_URI to your Vercel Project Environment Variables.");
+        }
         const embeddedUri = await startEmbeddedDatabase();
         const conn = await mongoose.connect(embeddedUri, {
           serverSelectionTimeoutMS: 5000,
